@@ -112,6 +112,50 @@ Renders currently running and waiting — handy for health checks and metrics.
 | `ETIMEDOUT` | Browser launch or page creation exceeded the `timeout` deadline. (Load and PDF steps throw Puppeteer's own `TimeoutError`.) |
 | `EQUEUEFULL` | `maxQueue` renders were already waiting. |
 
+## Benchmarks
+
+One-page A4 report (inline CSS, 30-row table), measured with
+[`bench/benchmark.js`](bench/benchmark.js) on an Intel i7-6500U laptop
+(2 cores / 4 threads, 8 GB RAM), Windows 10, Node 24, Puppeteer 25.3.
+
+| Job | Mean | p50 | p95 |
+|---|---|---|---|
+| Launch Chromium + render + close, per PDF (no pool) | 1862 ms | 1862 ms | 2190 ms |
+| Pool, first render (includes browser launch) | 1690 ms | | |
+| **Pool, warm render** (`isolate: true`, default) | **657 ms** | 625 ms | 885 ms |
+| **Pool, warm render** (`isolate: false`) | **465 ms** | 442 ms | 667 ms |
+
+A warm render is **~2.8× faster** than launching Chromium per PDF (~4× without
+isolation). Per-render isolation costs ~190 ms on this machine.
+
+**Burst of 40 simultaneous renders:**
+
+| `concurrency` | Wall time | PDFs/s |
+|---|---|---|
+| 1 | 28.3 s | 1.4 |
+| 2 | 31.8 s | 1.3 |
+| 4 | 24.8 s | 1.6 |
+
+Rendering is CPU-bound, so on a 2-core machine extra concurrency barely helps.
+Set `concurrency` to roughly the cores you can spare, and use `maxQueue` to cap
+latency instead.
+
+**Other behaviour:**
+
+- **Back-pressure** (`concurrency: 2`, `maxQueue: 5`, 20 simultaneous requests):
+  7 rendered, 13 rejected immediately with `EQUEUEFULL`.
+- **Image host that never responds:** 3.5 s with defaults (3 s `assetTimeout`,
+  then print without it); 1.0 s with `assetTimeout: 500`; `waitUntil:
+  'networkidle0'` fails with `TimeoutError` at the `timeout`.
+
+Numbers vary with hardware and OS (Chromium usually launches faster on Linux);
+run the benchmark on your own machine:
+
+```bash
+npm install --no-save puppeteer
+node bench/benchmark.js
+```
+
 ## Why domcontentloaded by default
 
 HTML templates are expected to be self-contained (inline CSS). If a template
