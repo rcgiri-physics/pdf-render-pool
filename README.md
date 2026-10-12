@@ -181,10 +181,11 @@ const certPool = createPdfRenderPool({ concurrency: 4 });
 const reportPool = createPdfRenderPool({ concurrency: 1, maxQueue: 10 });
 ```
 
-## Background
+## Used in production
 
-Extracted from the PDF renderer of [mcqplex.com](https://mcqplex.com), where it
-renders exam reports, student report cards and competition certificates.
+[mcqplex.com](https://mcqplex.com) uses `pdf-render-pool` to render exam
+reports, student report cards and competition certificates. The package was
+extracted from its PDF renderer.
 
 ## License
 
