@@ -11,10 +11,12 @@ function makeBrowser() {
     connected: true,
     newPage: async () => ({
       setContent: async () => {},
+      evaluate: async () => {},
       pdf: async () => Buffer.from('%PDF-fake'),
       close: async () => {},
     }),
     once: (event, cb) => { listeners[event] = cb; },
+    createBrowserContext: async function () { this.contextsCreated = (this.contextsCreated || 0) + 1; const ctx = { newPage: this.newPage, close: async () => { ctx.closed = true; } }; (this.contexts = this.contexts || []).push(ctx); return ctx; },
     close: async () => {},
     _emitDisconnected: () => listeners.disconnected && listeners.disconnected(),
   };
