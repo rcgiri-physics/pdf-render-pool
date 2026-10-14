@@ -44,6 +44,7 @@ function withTimeout(promise, ms, label) {
  * @property {number} [concurrency=2] - max renders running at once across the pool.
  * @property {number} [maxQueue=Infinity] - max renders allowed to wait for a slot; beyond this, renders reject with code 'EQUEUEFULL'.
  * @property {number} [idleTimeout=0] - close the browser after this many ms without renders (0 = keep it open). It relaunches on the next render.
+ * @property {number} [maxRendersPerBrowser=0] - recycle Chromium after this many renders (0 = never). New renders go to a fresh browser; the old one closes once its in-flight renders finish.
  * @property {string|string[]} [waitUntil='domcontentloaded'] - default load event to wait for before printing (e.g. 'load', 'networkidle0').
  * @property {number} [assetTimeout=3000] - with waitUntil 'domcontentloaded': how long (ms) to let images/fonts finish loading before cancelling the rest. 0 = cancel immediately.
  * @property {boolean} [isolate=true] - give each render its own browser context (no shared cookies/storage/cache). Set false to share the default context.
@@ -64,6 +65,7 @@ function createPdfRenderPool(options = {}) {
     concurrency = DEFAULT_CONCURRENCY,
     maxQueue = Infinity,
     idleTimeout = 0,
+    maxRendersPerBrowser = 0,
     waitUntil: defaultWaitUntil = DEFAULT_WAIT_UNTIL,
     assetTimeout: defaultAssetTimeout = DEFAULT_ASSET_TIMEOUT_MS,
     isolate = true,
@@ -79,12 +81,22 @@ function createPdfRenderPool(options = {}) {
   const intentionallyClosed = new WeakSet();
   let inFlight = 0;
   let idleTimer = null;
+  // The browser `browserPromise` resolved to, once it has.
+  let currentBrowser = null;
+  // Per-browser render counts, for maxRendersPerBrowser.
+  const usage = new WeakMap();
+  // Browsers past their render budget: no new renders, closed once drained.
+  const retired = new Set();
 
   async function getBrowser() {
     if (browserPromise) {
+      const pending = browserPromise;
       const existing = await browserPromise.catch(() => null);
-      if (existing && existing.connected) return existing;
-      browserPromise = null; // launch failed or browser died — fall through to relaunch
+      if (existing && existing.connected && !retired.has(existing)) return existing;
+      // Launch failed, browser died or was retired — fall through to relaunch
+      // (unless a concurrent caller already started one).
+      if (browserPromise && browserPromise !== pending) return getBrowser();
+      if (browserPromise === pending) browserPromise = null;
     }
 
     const puppeteer = require(puppeteerModule);
@@ -104,7 +116,10 @@ function createPdfRenderPool(options = {}) {
       })
       .then((browser) => {
         onInfo('[pdf-render-pool] Headless Chromium launched (persistent).');
+        if (browserPromise === thisLaunch) currentBrowser = browser;
         browser.once('disconnected', () => {
+          retired.delete(browser);
+          if (currentBrowser === browser) currentBrowser = null;
           // Only clear the cache if it still points at this browser — a newer
           // launch may already have replaced it.
           if (browserPromise === thisLaunch) browserPromise = null;
@@ -121,6 +136,41 @@ function createPdfRenderPool(options = {}) {
     } catch (err) {
       if (browserPromise === thisLaunch) browserPromise = null;
       throw err;
+    }
+  }
+
+  /** Get a usable browser and count one render against it. */
+  async function acquireBrowser() {
+    for (;;) {
+      const browser = await getBrowser();
+      // A concurrent render may have retired it while we awaited.
+      if (retired.has(browser) && browser.connected) continue;
+      let u = usage.get(browser);
+      if (!u) usage.set(browser, (u = { renders: 0, active: 0 }));
+      u.renders += 1;
+      u.active += 1;
+      if (maxRendersPerBrowser > 0 && u.renders >= maxRendersPerBrowser) retire(browser);
+      return browser;
+    }
+  }
+
+  function retire(browser) {
+    if (retired.has(browser)) return;
+    retired.add(browser);
+    if (currentBrowser === browser) {
+      currentBrowser = null;
+      browserPromise = null;
+    }
+    onInfo(`[pdf-render-pool] Chromium reached ${maxRendersPerBrowser} renders — recycling.`);
+  }
+
+  function releaseBrowser(browser) {
+    const u = usage.get(browser);
+    if (u) u.active -= 1;
+    if (retired.has(browser) && (!u || u.active <= 0)) {
+      retired.delete(browser);
+      intentionallyClosed.add(browser);
+      browser.close().catch(() => {});
     }
   }
 
@@ -170,46 +220,58 @@ function createPdfRenderPool(options = {}) {
         const deadline = Date.now() + timeout;
         const remaining = () => Math.max(1, deadline - Date.now());
 
-        const browser = await withTimeout(getBrowser(), remaining(), 'Browser launch');
-        // With `isolate`, each render gets its own browser context (separate
-        // cookies, localStorage and cache); closing it closes its page too.
-        const targetPromise = isolate
-          ? createContext(browser).then(async (context) => {
-            try {
-              return { context, page: await context.newPage() };
-            } catch (err) {
-              await context.close().catch(() => {});
-              throw err;
-            }
-          })
-          : browser.newPage().then((page) => ({ context: null, page }));
-        let target;
+        const acquiring = acquireBrowser();
+        let browser;
         try {
-          target = await withTimeout(targetPromise, remaining(), 'Opening page');
+          browser = await withTimeout(acquiring, remaining(), 'Browser launch');
         } catch (err) {
-          // If the page shows up after we gave up on it, don't leak it.
-          targetPromise.then(closeTarget).catch(() => {});
+          // If the browser shows up after we gave up on it, don't hold it open.
+          acquiring.then(releaseBrowser).catch(() => {});
           throw err;
         }
         try {
-          await load(target.page, { waitUntil, timeout: remaining() });
-          if (waitUntil === 'domcontentloaded') {
-            // Give images/fonts up to `assetTimeout` to finish, then cancel
-            // whatever is still pending. Without the cancel, page.pdf() waits
-            // on them (it awaits document.fonts.ready), so a dead remote image
-            // could stall printing until `timeout`; without the grace period,
-            // a slow-but-working logo would be cut from the PDF.
-            const page = target.page;
-            const grace = Math.min(assetTimeout, remaining());
-            if (grace > 0 && typeof page.waitForNetworkIdle === 'function') {
-              await page.waitForNetworkIdle({ idleTime: 100, timeout: grace }).catch(() => {});
-            }
-            await page.evaluate(() => window.stop()).catch(() => {});
+          // With `isolate`, each render gets its own browser context (separate
+          // cookies, localStorage and cache); closing it closes its page too.
+          const targetPromise = isolate
+            ? createContext(browser).then(async (context) => {
+              try {
+                return { context, page: await context.newPage() };
+              } catch (err) {
+                await context.close().catch(() => {});
+                throw err;
+              }
+            })
+            : browser.newPage().then((page) => ({ context: null, page }));
+          let target;
+          try {
+            target = await withTimeout(targetPromise, remaining(), 'Opening page');
+          } catch (err) {
+            // If the page shows up after we gave up on it, don't leak it.
+            targetPromise.then(closeTarget).catch(() => {});
+            throw err;
           }
-          const pdf = await target.page.pdf({ printBackground: true, ...pageOptions, timeout: remaining() });
-          return Buffer.from(pdf);
+          try {
+            await load(target.page, { waitUntil, timeout: remaining() });
+            if (waitUntil === 'domcontentloaded') {
+              // Give images/fonts up to `assetTimeout` to finish, then cancel
+              // whatever is still pending. Without the cancel, page.pdf() waits
+              // on them (it awaits document.fonts.ready), so a dead remote image
+              // could stall printing until `timeout`; without the grace period,
+              // a slow-but-working logo would be cut from the PDF.
+              const page = target.page;
+              const grace = Math.min(assetTimeout, remaining());
+              if (grace > 0 && typeof page.waitForNetworkIdle === 'function') {
+                await page.waitForNetworkIdle({ idleTime: 100, timeout: grace }).catch(() => {});
+              }
+              await page.evaluate(() => window.stop()).catch(() => {});
+            }
+            const pdf = await target.page.pdf({ printBackground: true, ...pageOptions, timeout: remaining() });
+            return Buffer.from(pdf);
+          } finally {
+            await closeTarget(target);
+          }
         } finally {
-          await closeTarget(target);
+          releaseBrowser(browser);
         }
       });
     } finally {
@@ -248,9 +310,16 @@ function createPdfRenderPool(options = {}) {
       clearTimeout(idleTimer);
       idleTimer = null;
     }
+    const draining = [...retired];
+    retired.clear();
+    for (const b of draining) {
+      intentionallyClosed.add(b);
+      await b.close().catch(() => {});
+    }
     if (!browserPromise) return;
     const pending = browserPromise;
     browserPromise = null;
+    currentBrowser = null;
     const browser = await pending.catch(() => null);
     if (browser) {
       intentionallyClosed.add(browser);

@@ -1,6 +1,6 @@
 {
   "name": "pdf-render-pool",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A persistent, concurrency-capped headless-Chromium HTML-to-PDF renderer built on Puppeteer — one warm browser instead of launching/tearing down Chromium per PDF.",
   "main": "src/index.js",
   "types": "src/index.d.ts",

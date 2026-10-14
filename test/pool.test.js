@@ -179,6 +179,43 @@ test('idleTimeout closes the browser after inactivity and relaunches on demand',
   restore();
 });
 
+test('maxRendersPerBrowser recycles the browser after N renders', async () => {
+  const browsers = [];
+  const restore = useFake({ launch: async () => { const b = makeFakeBrowser(); browsers.push(b); return b; } });
+  const warnings = [];
+  const pool = createPdfRenderPool({ puppeteerModule: FAKE_PUPPETEER, maxRendersPerBrowser: 2, onWarn: (m) => warnings.push(m) });
+
+  for (let i = 0; i < 5; i++) await pool.renderPdf('<p>x</p>');
+  assert.equal(browsers.length, 3);
+  assert.deepEqual(browsers.map((b) => b.connected), [false, false, true]);
+  assert.equal(warnings.length, 0, 'recycling is not a crash');
+  await pool.closeBrowser();
+  assert.equal(browsers[2].connected, false);
+  restore();
+});
+
+test('maxRendersPerBrowser waits for in-flight renders before closing the old browser', async () => {
+  const browsers = [];
+  const restore = useFake({
+    launch: async () => {
+      // pdf() fails if its browser was closed mid-render.
+      const b = makeFakeBrowser({
+        pdf: () => new Promise((resolve, reject) => setTimeout(() => (b.connected ? resolve(Buffer.from('%PDF-fake')) : reject(new Error('browser closed mid-render'))), 40)),
+      });
+      browsers.push(b);
+      return b;
+    },
+  });
+  const pool = createPdfRenderPool({ puppeteerModule: FAKE_PUPPETEER, concurrency: 4, maxRendersPerBrowser: 2 });
+
+  const results = await Promise.allSettled([1, 2, 3, 4].map(() => pool.renderPdf('<p>x</p>')));
+  assert.deepEqual(results.map((r) => r.status), ['fulfilled', 'fulfilled', 'fulfilled', 'fulfilled']);
+  assert.equal(browsers.length, 2, 'each browser served at most 2 renders');
+  assert.equal(browsers[0].connected, false, 'first browser closed after draining');
+  await pool.closeBrowser();
+  restore();
+});
+
 test('maxQueue rejects renders beyond the queue limit', async () => {
   const restore = useFake({
     launch: async () => makeFakeBrowser({

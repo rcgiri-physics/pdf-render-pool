@@ -20,7 +20,7 @@ server.
 - **Bounded** — every render has one `timeout` deadline covering browser launch, page creation, content load and PDF generation.
 - **Crash-safe** — if Chromium dies mid-run, the next render transparently relaunches it.
 - **Isolated** — every render runs in its own browser context (separate cookies, localStorage and cache), always closed afterwards, so renders can't leak pages or state into each other. Opt out with `isolate: false`.
-- **Memory-friendly** — optionally close the browser when idle (`idleTimeout`); it relaunches on the next render.
+- **Memory-friendly** — optionally close the browser when idle (`idleTimeout`), or recycle it after N renders (`maxRendersPerBrowser`) without interrupting renders in flight.
 
 ## Install
 
@@ -66,6 +66,7 @@ createPdfRenderPool({
   concurrency: 4,                // max renders at once (default 2)
   maxQueue: 100,                 // max renders waiting for a slot (default Infinity)
   idleTimeout: 5 * 60_000,       // close Chromium after 5 min without renders (default 0 = never)
+  maxRendersPerBrowser: 500,     // recycle Chromium after 500 renders (default 0 = never)
   waitUntil: 'domcontentloaded', // default load event for every render
   assetTimeout: 3000,            // ms images/fonts get before being cancelled (default 3000)
   isolate: true,                 // fresh browser context per render (default true)
@@ -82,6 +83,10 @@ Default launch flags (`--no-sandbox`, `--disable-setuid-sandbox`,
 `--disable-dev-shm-usage`, `--disable-gpu`) target typical Linux
 servers/containers where Chromium runs as non-root with a tiny `/dev/shm`.
 Override them via `launchOptions`.
+
+`maxRendersPerBrowser` caps how many renders one Chromium serves. Once it is
+reached, new renders go to a freshly launched browser and the old one closes
+after its in-flight renders finish, so recycling never interrupts a render.
 
 ### `renderPdf(html, options?)` → `Promise<Buffer>`
 ### `renderPdfFromUrl(url, options?)` → `Promise<Buffer>`
@@ -154,6 +159,25 @@ run the benchmark on your own machine:
 ```bash
 npm install --no-save puppeteer
 node bench/benchmark.js
+```
+
+### Memory under sustained load
+
+[`bench/memory.js`](bench/memory.js): 3,000 renders of a heavy page (400-row
+table + SVG chart), concurrency 2, total memory of all Chromium processes
+(same laptop, Windows):
+
+| | Start | After 3,000 renders | Peak |
+|---|---|---|---|
+| One warm browser, no recycling | 367 MB | 375 MB | 377 MB |
+| `maxRendersPerBrowser: 500` | 360 MB | back to baseline at each recycle | 371 MB |
+
+Closing each render's isolated context frees almost everything it used, so a
+warm browser stays nearly flat. `maxRendersPerBrowser` is a safety valve for
+pages that do grow Chromium's memory; every render succeeded across recycles.
+
+```bash
+node bench/memory.js [renders=3000] [maxRendersPerBrowser=500]
 ```
 
 ## Why domcontentloaded by default

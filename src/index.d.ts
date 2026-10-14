@@ -4,6 +4,7 @@ export interface PdfRenderPoolOptions {
   concurrency?: number;
   maxQueue?: number;
   idleTimeout?: number;
+  maxRendersPerBrowser?: number;
   waitUntil?: WaitUntil | WaitUntil[];
   assetTimeout?: number;
   isolate?: boolean;
