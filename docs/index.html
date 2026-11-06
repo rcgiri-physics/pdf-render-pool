@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pdf-render-pool</title>
+<meta name="description" content="A warm, concurrency-capped headless Chromium HTML-to-PDF renderer for Node, built on Puppeteer.">
+<style>
+  :root { color-scheme: light dark; --bg:#fbfaf8; --fg:#22211f; --muted:#67635c; --line:#e2dfd9; --code:#f1efea; --accent:#1f5f8b; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#191a1c; --fg:#e9e7e3; --muted:#a5a29b; --line:#34363a; --code:#25272a; --accent:#7ab8e0; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:17px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:56px 16px 72px; }
+  h1 { font-size:2.2rem; line-height:1.15; margin:0 0 12px; font-family:ui-monospace,Consolas,monospace; overflow-wrap:anywhere; }
+  h2 { font-size:1.3rem; margin:44px 0 10px; }
+  .lead { font-size:1.15rem; color:var(--muted); margin:0 0 18px; }
+  a { color:var(--accent); }
+  nav a { margin-right:16px; display:inline-block; }
+  pre { background:var(--code); padding:14px 16px; border-radius:6px; overflow-x:auto; font-size:.86rem; line-height:1.5; }
+  code { font-family:ui-monospace,Consolas,monospace; font-size:.9em; }
+  :not(pre) > code { background:var(--code); padding:1px 5px; border-radius:4px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:.93rem; }
+  th, td { text-align:left; padding:8px 12px 8px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-weight:600; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  li { margin-bottom:6px; }
+  footer { margin-top:56px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:.9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>pdf-render-pool</h1>
+  <p class="lead">Turn HTML into PDFs from a Node process, with one warm Chromium and a cap on how many render at once.</p>
+  <nav>
+    <a href="https://github.com/rcgiri-physics/pdf-render-pool#api">API reference</a>
+    <a href="https://github.com/rcgiri-physics/pdf-render-pool">GitHub</a>
+    <a href="https://www.npmjs.com/package/pdf-render-pool">npm</a>
+    <a href="https://github.com/rcgiri-physics/pdf-render-pool/blob/master/CHANGELOG.md">Changelog</a>
+  </nav>
+
+  <h2>Quick start</h2>
+  <pre><code>npm install pdf-render-pool puppeteer</code></pre>
+<pre><code>const { createPdfRenderPool } = require('pdf-render-pool');
+
+// Create once per process and reuse it.
+const pool = createPdfRenderPool({ concurrency: 2, maxQueue: 100 });
+
+const pdf = await pool.renderPdf('&lt;h1&gt;Invoice #42&lt;/h1&gt;', { format: 'A4' });
+
+// On shutdown: finishes running and queued renders first.
+await pool.close();</code></pre>
+  <p>Requires Node 20+ and Puppeteer 22+.</p>
+
+  <h2>What it handles</h2>
+  <ul>
+    <li><strong>Overload:</strong> extra renders queue, and <code>maxQueue</code> or <code>queueTimeout</code> reject them when there are too many.</li>
+    <li><strong>Stuck pages:</strong> one <code>timeout</code> covers the render, including pages stuck in a script loop.</li>
+    <li><strong>Browser failures:</strong> a browser that crashes or stops responding is replaced, with optional <code>retries</code>.</li>
+    <li><strong>Isolation:</strong> each render gets its own browser context, closed afterwards.</li>
+    <li><strong>Memory:</strong> <code>idleTimeout</code> and <code>maxRendersPerBrowser</code> release or recycle the browser.</li>
+    <li><strong>Bad responses:</strong> a 404 or 500 rejects instead of becoming a PDF of the error page.</li>
+  </ul>
+
+  <h2>Benchmarks</h2>
+  <p>One-page A4 report on a 2-core laptop, measured on v0.2.x. Numbers vary by machine.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Job</th><th class="num">Mean</th><th class="num">p95</th></tr></thead>
+    <tbody>
+      <tr><td>Launch Chromium per PDF (no pool)</td><td class="num">1862 ms</td><td class="num">2190 ms</td></tr>
+      <tr><td>Warm render, isolated (default)</td><td class="num">657 ms</td><td class="num">885 ms</td></tr>
+      <tr><td>Warm render, <code>isolate: false</code></td><td class="num">465 ms</td><td class="num">667 ms</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2>Rendering user content</h2>
+  <p>Rendered HTML runs in a real browser on your server and can request anything your server can reach. Chromium's sandbox is also off by default so that it starts on typical servers. If users can influence the HTML or URL, read the <a href="https://github.com/rcgiri-physics/pdf-render-pool#security">security notes</a> and use <code>requestFilter</code> and <code>sandbox: true</code>.</p>
+
+  <h2>When to use something else</h2>
+  <ul>
+    <li><a href="https://github.com/gotenberg/gotenberg">Gotenberg</a> for a separate Docker service, Office conversion, merging or PDF/A.</li>
+    <li><a href="https://github.com/thomasdondorf/puppeteer-cluster">puppeteer-cluster</a> for crawling or general browser jobs.</li>
+    <li><a href="https://github.com/browserless/browserless">browserless</a> for browsers shared across many services.</li>
+  </ul>
+
+  <footer>MIT licensed. Used by <a href="https://mcqplex.com">mcqplex.com</a> for reports and certificates.</footer>
+</main>
+</body>
+</html>

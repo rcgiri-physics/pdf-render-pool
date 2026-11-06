@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const { createPdfRenderPool } = require('../src/index.js');
 
 async function main() {
-  const { renderPdf, closeBrowser } = createPdfRenderPool({ concurrency: 2 });
+  const { renderPdf, close } = createPdfRenderPool({ concurrency: 2 });
 
   const html = `
     <html>
@@ -21,7 +21,7 @@ async function main() {
   fs.writeFileSync('output.pdf', pdf);
   console.log('Wrote output.pdf');
 
-  await closeBrowser();
+  await close();
 }
 
 main().catch((err) => {
