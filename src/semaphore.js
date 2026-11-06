@@ -1,45 +1,84 @@
 'use strict';
 
+function makeError(code, message) {
+  const err = new Error(`[pdf-render-pool] ${message}`);
+  err.code = code;
+  return err;
+}
+
+function abortError() {
+  const err = makeError('ABORT_ERR', 'Render aborted.');
+  err.name = 'AbortError';
+  return err;
+}
+
 /**
  * Minimal async concurrency limiter. Tasks queue FIFO and run as slots free up.
  * @param {number} max - maximum number of tasks allowed to run concurrently.
  * @param {number} [maxQueue=Infinity] - maximum number of tasks allowed to wait; beyond this, run() rejects with code 'EQUEUEFULL'.
- * @returns {<T>(task: () => Promise<T>) => Promise<T>}
  */
 function createSemaphore(max, maxQueue = Infinity) {
-  const limit = Math.max(1, parseInt(max, 10) || 1);
-  const queueLimit = maxQueue === Infinity ? Infinity : Math.max(0, parseInt(maxQueue, 10) || 0);
   let active = 0;
   const queue = [];
 
   const next = () => {
-    if (active >= limit || queue.length === 0) return;
+    if (active >= max || queue.length === 0) return;
     active += 1;
-    const { task, resolve, reject } = queue.shift();
+    const entry = queue.shift();
+    entry.dequeued();
     Promise.resolve()
-      .then(task)
-      .then(resolve, reject)
+      .then(entry.task)
+      .then(entry.resolve, entry.reject)
       .finally(() => {
         active -= 1;
         next();
       });
   };
 
-  function run(task) {
+  /**
+   * @param {() => Promise<any>} task
+   * @param {{ signal?: AbortSignal, queueTimeout?: number }} [options] - both only apply while the task is waiting for a slot.
+   */
+  function run(task, { signal, queueTimeout = Infinity } = {}) {
+    if (signal && signal.aborted) return Promise.reject(abortError());
     // Only tasks that would actually have to wait count against the queue limit.
-    if (active >= limit && queue.length >= queueLimit) {
-      const err = new Error(`[pdf-render-pool] Render queue is full (${queueLimit} waiting).`);
-      err.code = 'EQUEUEFULL';
-      return Promise.reject(err);
+    if (active >= max && queue.length >= maxQueue) {
+      return Promise.reject(makeError('EQUEUEFULL', `Render queue is full (${maxQueue} waiting).`));
     }
     return new Promise((resolve, reject) => {
-      queue.push({ task, resolve, reject });
+      let timer = null;
+      const entry = { task, resolve, reject, dequeued() {} };
+      const drop = (err) => {
+        const i = queue.indexOf(entry);
+        if (i === -1) return;
+        queue.splice(i, 1);
+        entry.dequeued();
+        reject(err);
+      };
+      const onAbort = () => drop(abortError());
+      entry.dequeued = () => {
+        if (timer) clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', onAbort);
+      };
+      entry.drop = drop;
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
+      if (queueTimeout !== Infinity) {
+        timer = setTimeout(
+          () => drop(makeError('EQUEUETIMEOUT', `Waited more than ${queueTimeout}ms for a render slot.`)),
+          queueTimeout,
+        );
+      }
+      queue.push(entry);
       next();
     });
   }
 
   run.stats = () => ({ active, queued: queue.length });
+  /** Reject everything still waiting for a slot. */
+  run.rejectQueued = (err) => {
+    for (const entry of [...queue]) entry.drop(err);
+  };
   return run;
 }
 
-module.exports = { createSemaphore };
+module.exports = { createSemaphore, makeError, abortError };

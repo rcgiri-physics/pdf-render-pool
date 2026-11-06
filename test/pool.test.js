@@ -226,7 +226,8 @@ test('maxQueue rejects renders beyond the queue limit', async () => {
   const results = await Promise.allSettled([1, 2, 3].map(() => pool.renderPdf('<p>x</p>')));
   assert.deepEqual(results.map((r) => r.status), ['fulfilled', 'fulfilled', 'rejected']);
   assert.equal(results[2].reason.code, 'EQUEUEFULL');
-  assert.deepEqual(pool.stats(), { active: 0, queued: 0 });
+  const { active, queued } = pool.stats();
+  assert.deepEqual({ active, queued }, { active: 0, queued: 0 });
   await pool.closeBrowser();
   restore();
 });
@@ -255,19 +256,6 @@ test('isolate: false uses the default context', async () => {
   const pool = createPdfRenderPool({ puppeteerModule: FAKE_PUPPETEER, isolate: false });
   await pool.renderPdf('<p>a</p>');
   assert.equal(browser.contexts, undefined);
-  await pool.closeBrowser();
-  restore();
-});
-
-test('falls back to createIncognitoBrowserContext on Puppeteer < 22', async () => {
-  const browser = makeFakeBrowser();
-  let incognito = 0;
-  browser.createIncognitoBrowserContext = async () => { incognito += 1; return { newPage: browser.newPage, close: async () => {} }; };
-  delete browser.createBrowserContext;
-  const restore = useFake({ launch: async () => browser });
-  const pool = createPdfRenderPool({ puppeteerModule: FAKE_PUPPETEER });
-  await pool.renderPdf('<p>a</p>');
-  assert.equal(incognito, 1);
   await pool.closeBrowser();
   restore();
 });

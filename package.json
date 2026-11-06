@@ -1,14 +1,19 @@
 {
   "name": "pdf-render-pool",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "A persistent, concurrency-capped headless-Chromium HTML-to-PDF renderer built on Puppeteer — one warm browser instead of launching/tearing down Chromium per PDF.",
   "main": "src/index.js",
   "types": "src/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.d.ts",
-      "import": "./src/index.mjs",
-      "require": "./src/index.js"
+      "import": {
+        "types": "./src/index.d.mts",
+        "default": "./src/index.mjs"
+      },
+      "require": {
+        "types": "./src/index.d.ts",
+        "default": "./src/index.js"
+      }
     },
     "./package.json": "./package.json"
   },
@@ -16,13 +21,15 @@
     "src"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/pool.test.js"
+    "test": "node --test test/pool.test.js test/hardening.test.js",
+    "test:integration": "node --test test/integration.test.js",
+    "test:coverage": "node --test --experimental-test-coverage test/pool.test.js test/hardening.test.js"
   },
   "peerDependencies": {
-    "puppeteer": ">=20"
+    "puppeteer": ">=22"
   },
   "peerDependenciesMeta": {
     "puppeteer": {
@@ -46,5 +53,9 @@
     "url": "https://github.com/rcgiri-physics/pdf-render-pool/issues"
   },
   "author": "Ram Chandra Giri",
-  "homepage": "https://github.com/rcgiri-physics/pdf-render-pool#readme"
+  "homepage": "https://rcgiri-physics.github.io/pdf-render-pool/",
+  "type": "commonjs",
+  "devDependencies": {
+    "puppeteer": "^25.13.0"
+  }
 }
